@@ -2,7 +2,8 @@
 #
 # Syntax: NAME = value, one per line. Quotes are optional and only needed to
 # protect leading/trailing spaces; everything after an unquoted # is a comment.
-# Lists (INPUT_DIR_NAME, EXCLUDE_DIR_PATTERNS) are comma-separated.
+# Lists (INPUT_DIR_NAME, EXCLUDE_DIR_PATTERNS, INCLUDE_PATTERNS,
+# EXCLUDE_PATTERNS) are comma-separated.
 # Unknown names and bad values are refused -- run --check to see them all.
 #
 # Copy this file and adjust. To handle another source/destination pair, write
@@ -177,9 +178,49 @@ DEEP_SCAN_INTERVAL=300
 
 # Directory-name patterns (case-insensitive globs) to ignore anywhere in the
 # tree. A matching directory is skipped and never descended into. Useful for a
-# producer's staging directories. Bash array; empty = off.
+# producer's staging directories. Empty = off.
 EXCLUDE_DIR_PATTERNS =
 # EXCLUDE_DIR_PATTERNS = "~*, *.tmp, *en_cours*"
+
+# ---------------------------------------------------------------------------
+# Which FILES to take (the two above select directories, these select files)
+# ---------------------------------------------------------------------------
+# Both are lists of case-insensitive globs matched against the file name alone
+# (never the path), and both are empty by default -- which means "take every
+# file", the behaviour of a version without these settings.
+#
+#   INCLUDE_PATTERNS   empty = everything. Otherwise a file must match one of
+#                      the patterns to be taken at all: a whitelist.
+#   EXCLUDE_PATTERNS   applied after INCLUDE_PATTERNS, and it wins.
+#
+# A file that matches neither rule is NOT OURS: it is left exactly where it is,
+# never deployed, never archived, never deleted, and it does not appear in the
+# report. It stays in the source forever, which is the intended outcome for
+# somebody else's file.
+#
+# The usual reason to set these is an Office share. Opening a workbook creates
+# a lock file "~$facture.xlsx" next to it, and saving one leaves temporaries
+# behind. Without EXCLUDE_PATTERNS those are ordinary files: they get deployed
+# and MOVED OUT while the person is still editing.
+#
+# Examples
+#   Take only spreadsheets and CSVs, never Office leftovers:
+#     INCLUDE_PATTERNS = "*.xlsx, *.csv"
+#     EXCLUDE_PATTERNS = "~$*, *.tmp"
+#   Take everything except the noise (no whitelist):
+#     EXCLUDE_PATTERNS = "~$*, *.tmp, *.part, *.crdownload, .*, Thumbs.db"
+#   One producer, one extension:
+#     INCLUDE_PATTERNS = "export_*.csv"
+#
+# Notes
+#   - Globs are anchored: "csv" matches nothing, "*.csv" is what you want.
+#   - A pattern may contain spaces ("Facture *.xlsx"); the separator is the
+#     comma, so a pattern cannot itself contain one.
+#   - Set INCLUDE_PATTERNS too narrowly and the run is silently empty -- it is
+#     not an error. RUN_SUMMARY logs unselected="N", and LOG_LEVEL = DEBUG
+#     names each file it passed over (event=NOT_SELECTED).
+INCLUDE_PATTERNS =
+EXCLUDE_PATTERNS =
 
 # ===========================================================================
 # Report, for BI tools

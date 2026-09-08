@@ -779,6 +779,144 @@ class TestSelection(Base):
 
 
 # ==========================================================================
+class TestFilePatterns(Base):
+    """INCLUDE_PATTERNS / EXCLUDE_PATTERNS, end to end.
+
+    The stake is higher here than for a read-only tool: an unselected file must
+    not merely be left undeployed, it must be left *in place*. file-deploy
+    deletes what it takes, so "not ours" has to mean "never touched".
+    """
+
+    def test_by_default_every_extension_is_taken(self):
+        # The upgrade must change nothing for an existing configuration.
+        for name in ("a.csv", "b.xlsx", "notes", ".hidden", "~$book.xlsx"):
+            self.drop("input/" + name)
+        self.write_conf()
+        self.run_fd()
+        self.assertEqual(self.pending(), [], "everything drained")
+        self.assertEqual(len(self.tree(self.dep)), 5)
+
+    def test_include_deploys_only_what_matches(self):
+        self.drop("input/facture.csv")
+        self.drop("input/notes.txt")
+        self.write_conf(INCLUDE_PATTERNS='"*.csv"')
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/facture.csv"])
+        self.assertEqual(self.pending(), ["input/notes.txt"], "left in place")
+
+    def test_an_unselected_file_is_never_deleted_nor_archived(self):
+        # The no-loss property, restated for the filter.
+        self.drop("input/keep.txt", "precious\n")
+        self.write_conf(INCLUDE_PATTERNS='"*.csv"')
+        self.run_fd()
+        self.run_fd()                                  # and it survives repeats
+        with open(os.path.join(self.src, "input", "keep.txt"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "precious\n", "byte-for-byte untouched")
+        self.assertEqual(self.archived(), [], "not archived either")
+
+    def test_exclude_wins_over_include(self):
+        self.drop("input/facture.xlsx")
+        self.drop("input/~$facture.xlsx")               # the Office lock file
+        self.write_conf(INCLUDE_PATTERNS='"*.xlsx"', EXCLUDE_PATTERNS='"~$*"')
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/facture.xlsx"])
+        self.assertEqual(self.pending(), ["input/~$facture.xlsx"],
+                         "the lock stays with the person editing")
+
+    def test_exclude_alone_is_a_blacklist(self):
+        self.drop("input/a.csv")
+        self.drop("input/scan.tmp")
+        self.drop("input/.DS_Store")
+        self.write_conf(EXCLUDE_PATTERNS='"*.tmp, .*"')
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/a.csv"])
+        self.assertEqual(self.pending(), ["input/.DS_Store", "input/scan.tmp"])
+
+    def test_patterns_ignore_case(self):
+        self.drop("input/FACTURE.XLSX")
+        self.write_conf(INCLUDE_PATTERNS='"*.xlsx"')
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/FACTURE.XLSX"],
+                         "a Windows share does not distinguish the two")
+
+    def test_patterns_apply_in_every_pickup_directory(self):
+        # Not just the top one: the filter travels with the scan.
+        self.drop("input/a.csv")
+        self.drop("input/a.txt")
+        self.drop("input/sub/b.csv")
+        self.drop("input/sub/b.txt")
+        self.write_conf(INCLUDE_PATTERNS='"*.csv"')
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/a.csv", "input/sub/b.csv"])
+        self.assertEqual(self.pending(), ["input/a.txt", "input/sub/b.txt"])
+
+    def test_a_matching_file_still_leaves_normally(self):
+        # The filter must not disturb the move itself.
+        self.drop("input/facture.csv", "data\n")
+        self.write_conf(INCLUDE_PATTERNS='"*.csv"')
+        self.run_fd()
+        self.assertEqual(self.pending(), [])
+        self.assertEqual(self.archived(), ["input/archive/facture.csv"])
+        with open(os.path.join(self.dep, "input", "facture.csv"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "data\n")
+
+    def test_unselected_files_do_not_defeat_the_mtime_skip(self):
+        # One stray .DS_Store must not make its directory look busy forever.
+        self.drop("input/junk.tmp")
+        self.write_conf(EXCLUDE_PATTERNS='"*.tmp"', RUN_DURATION=2)
+        self.run_fd()
+        self.assertIn("SKIP_DIR_UNCHANGED", self.log(),
+                      "the directory settled despite the leftover")
+
+    def test_the_log_names_what_it_left_behind(self):
+        self.drop("input/junk.tmp")
+        self.write_conf(EXCLUDE_PATTERNS='"*.tmp"')
+        self.run_fd()
+        self.assertIn("NOT_SELECTED", self.log())
+        self.assertIn('unselected="1"', self.log(), "and RUN_SUMMARY counts it")
+
+    def test_a_wrong_include_is_diagnosable(self):
+        # The operator's most likely mistake: nothing moves and nothing errors.
+        self.drop("input/a.csv")
+        self.write_conf(INCLUDE_PATTERNS='"*.xlsx"')
+        r = self.run_fd()
+        self.assertEqual(r.returncode, 0, "not an error, just an empty run")
+        self.assertIn('unselected="1"', self.log())
+
+    def test_unselected_files_are_absent_from_the_report(self):
+        # They are not ours, so they are not rows: the dataset stays about the
+        # files the tool is responsible for.
+        self.drop("input/a.csv")
+        self.drop("input/junk.tmp")
+        self.write_conf(REPORT_DIR='"%s"' % os.path.join(self.sb, "reports"),
+                        EXCLUDE_PATTERNS='"*.tmp"')
+        self.run_fd()
+        import csv as _csv
+        with open(os.path.join(self.sb, "reports", "report.csv"),
+                  encoding="utf-8", newline="") as fh:
+            rows = list(_csv.DictReader(fh))
+        self.assertEqual([r["filename"] for r in rows], ["a.csv"])
+
+    def test_a_pattern_may_contain_a_space(self):
+        self.drop("input/Facture 2026.xlsx")
+        self.write_conf(INCLUDE_PATTERNS='"Facture *.xlsx"')
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/Facture 2026.xlsx"])
+
+    def test_the_config_line_distinguishes_the_two_exclude_settings(self):
+        # EXCLUDE_DIR_PATTERNS and EXCLUDE_PATTERNS are one letter apart in the
+        # log; reading the wrong one while diagnosing would cost an hour.
+        self.write_conf(EXCLUDE_DIR_PATTERNS='"~*"', EXCLUDE_PATTERNS='"*.tmp"')
+        self.run_fd()
+        self.assertIn('exclude_dir_patterns="~*"', self.log())
+        self.assertIn('exclude_patterns="*.tmp"', self.log())
+
+    def test_both_settings_are_accepted_by_check(self):
+        self.write_conf(INCLUDE_PATTERNS='"*.csv"', EXCLUDE_PATTERNS='"~$*"')
+        r = self.run_fd("--check")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 class TestInstances(Base):
     def test_two_configurations_share_nothing(self):
         srcB = os.path.join(self.sb, "srcB")

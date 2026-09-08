@@ -81,6 +81,30 @@ SOURCE_DIR/projA/input/facture.xml  ->  DEPLOY_DIR/projA/input/facture.xml
 SOURCE_DIR/projB/input/sub/bl.txt   ->  DEPLOY_DIR/projB/input/sub/bl.txt
 ```
 
+### Which files are taken
+
+Every regular file in a pickup directory, whatever its extension — that is the
+default. Two settings narrow it, both matched on the file name alone, both
+case-insensitive globs:
+
+```
+INCLUDE_PATTERNS = "*.xlsx, *.csv"   # empty = every file
+EXCLUDE_PATTERNS = "~$*, *.tmp"      # applied after, and it wins
+```
+
+A file that is not selected **is not touched**: left in place, never deployed,
+never archived, never deleted, absent from the report. It stays in the source.
+
+That is worth setting on an Office share. Opening a workbook creates a lock file
+`~$facture.xlsx` beside it; without an exclusion that lock is an ordinary file,
+so it gets deployed and *moved out* while somebody is still editing.
+
+Note the asymmetry with a read-only tool: here a pattern decides what gets
+deleted from the source, so a wrong `INCLUDE_PATTERNS` is quiet rather than
+loud. Nothing moves, the run still exits 0, and `RUN_SUMMARY` reports
+`unselected="N"`; run with `LOG_LEVEL = DEBUG` to see each file by name
+(`event=NOT_SELECTED`). Try a new pattern under `DRY_RUN = true` first.
+
 `INSTANCE_ID` is what makes two configurations independent: the state, log and
 lock paths are derived from it, so they cannot collide and two configurations
 run in parallel rather than serialising.

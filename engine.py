@@ -8,6 +8,7 @@ unit-test (see tests/test_engine.py):
 
   - Config.parse / .validate      the KEY = value configuration file
   - conflict_verdict()            what to do about an existing destination
+  - file_selected()               which files in a pickup directory are ours
   - candidate_names()             the naming rule shared by the deployment tree
                                   and the local archive
   - enc() / esc_glob()            the small encoders the logs use
@@ -22,6 +23,7 @@ That is what makes every retry land on exactly the same path.
 Standard library only. Requires Python 3.9 or newer.
 """
 
+import fnmatch
 import os
 import re
 import time
@@ -92,6 +94,29 @@ def split_list(value):
         if part:
             items.append(part)
     return items
+
+
+def file_selected(base, includes, excludes):
+    """Is this file one of ours? Decided on the base name alone.
+
+    Two lists of globs, both empty by default, which is what keeps the
+    behaviour of a version without them: take everything.
+
+      includes  empty means "everything"; otherwise a file must match one
+      excludes  applied after, and it wins -- the narrower rule of the two
+
+    Matching is case-insensitive, like EXCLUDE_DIR_PATTERNS: these files come
+    off Windows shares where "Facture.XLSX" and "facture.xlsx" are one name,
+    and a case-sensitive "*.xlsx" would quietly leave half of them behind.
+
+    A file that is not selected is simply not ours: it stays in the source and
+    nothing is ever written about it. That is the point for an Office lock file
+    (~$book.xlsx) -- taking it would pull the lock away from the person editing.
+    """
+    low = base.lower()
+    if includes and not any(fnmatch.fnmatch(low, p.lower()) for p in includes):
+        return False
+    return not any(fnmatch.fnmatch(low, p.lower()) for p in excludes)
 
 
 def stamp_from_epoch(epoch):
@@ -220,6 +245,8 @@ SETTINGS = [
     Setting("USE_DIR_MTIME_SKIP", "bool", True),
     Setting("DEEP_SCAN_INTERVAL", "int", 300, minimum=0),
     Setting("EXCLUDE_DIR_PATTERNS", "list", []),
+    Setting("INCLUDE_PATTERNS", "list", []),
+    Setting("EXCLUDE_PATTERNS", "list", []),
     # report
     Setting("REPORT_DIR", "path", ""),
     Setting("REPORT_DELIMITER", "str", ","),

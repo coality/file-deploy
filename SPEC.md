@@ -106,6 +106,35 @@ cycle, with no rediscovery.
 | `EXCLUDE_DIR_PATTERNS` | Case-insensitive globs | Same — directory skipped and never descended |
 | The walk's own root | Never excluded by its own name | A discovered `input` directory |
 
+### File selection
+
+Pruning above chooses *directories*. Within a retained pickup directory, two
+further settings choose *files*, on the base name alone:
+
+| Setting | Default | Rule |
+|---|---|---|
+| `INCLUDE_PATTERNS` | empty | Empty means every file. Otherwise a file must match one of these case-insensitive globs |
+| `EXCLUDE_PATTERNS` | empty | Applied after the include list, and it wins |
+
+Both empty is the specified default, and reproduces the behaviour of a version
+without them: every regular file is taken. Only regular files are ever
+considered — directories, symbolic links, sockets and FIFOs are skipped
+unconditionally, and that is not configurable.
+
+> **An unselected file is not ours.** It is left in place, byte for byte: never
+> deployed, never archived, never deleted, and absent from the report. It
+> remains in the source indefinitely. This is the intended outcome — the
+> motivating case is an Office lock file (`~$facture.xlsx`), which exists
+> precisely because somebody is editing the workbook next to it; taking it would
+> pull their lock away.
+>
+> An unselected file does **not** mark its directory unsettled, so one permanent
+> leftover cannot defeat the mtime skip forever ([§4](#4--discovery-and-scanning)).
+>
+> A too-narrow `INCLUDE_PATTERNS` produces a silent empty run, not an error.
+> `RUN_SUMMARY` carries `unselected="N"`, and at `DEBUG` each passed-over file is
+> named by an `event=NOT_SELECTED` line.
+
 > **Why pruning the archive is normative.** The local archive is created *inside*
 > a scanned directory. Without this, every archived file would be seen again on
 > the next cycle under a different relative path, deployed a second time, then
@@ -442,7 +471,9 @@ where a column exists.
 | `DISCOVERY_MAXDEPTH` | `0` | Depth cap; 0 = unlimited |
 | `USE_DIR_MTIME_SKIP` | `true` | Skip a directory whose mtime has not moved |
 | `DEEP_SCAN_INTERVAL` | `300` | Seconds between passes ignoring that skip |
-| `EXCLUDE_DIR_PATTERNS` | `()` | Case-insensitive globs to ignore anywhere |
+| `EXCLUDE_DIR_PATTERNS` | `()` | Case-insensitive globs: directories to ignore anywhere |
+| `INCLUDE_PATTERNS` | `()` | Case-insensitive globs on the file name; empty = take every file — see [§4](#file-selection) |
+| `EXCLUDE_PATTERNS` | `()` | Case-insensitive globs on the file name, applied after the include list and winning over it |
 
 | `LOG_LEVEL` | `"INFO"` | `DEBUG` / `INFO` / `WARN` / `ERROR` |
 | `LOG_FORMAT` | `"text"` | `text` or `json` |

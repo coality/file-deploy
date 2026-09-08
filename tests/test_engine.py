@@ -88,6 +88,63 @@ class TestConflictVerdict(unittest.TestCase):
                                engine.DEPLOY_CONFLICT])
 
 
+class TestFileSelection(unittest.TestCase):
+    def sel(self, base, inc=(), exc=()):
+        return engine.file_selected(base, list(inc), list(exc))
+
+    def test_both_empty_takes_everything(self):
+        # The default, and the reason an upgrade changes no behaviour.
+        for base in ("a.csv", "~$book.xlsx", ".DS_Store", "README", "x.TMP"):
+            self.assertTrue(self.sel(base))
+
+    def test_include_is_a_whitelist(self):
+        self.assertTrue(self.sel("facture.csv", inc=["*.csv"]))
+        self.assertFalse(self.sel("notes.txt", inc=["*.csv"]))
+
+    def test_include_accepts_several_patterns(self):
+        inc = ["*.csv", "*.xlsx"]
+        self.assertTrue(self.sel("a.csv", inc=inc))
+        self.assertTrue(self.sel("b.xlsx", inc=inc))
+        self.assertFalse(self.sel("c.pdf", inc=inc))
+
+    def test_exclude_wins_over_include(self):
+        # The whole point of the pair: take the workbooks, never the lock file.
+        self.assertFalse(self.sel("~$facture.xlsx", inc=["*.xlsx"], exc=["~$*"]))
+        self.assertTrue(self.sel("facture.xlsx", inc=["*.xlsx"], exc=["~$*"]))
+
+    def test_exclude_alone_is_a_blacklist(self):
+        self.assertFalse(self.sel("scan.tmp", exc=["*.tmp"]))
+        self.assertTrue(self.sel("scan.csv", exc=["*.tmp"]))
+
+    def test_matching_is_case_insensitive(self):
+        # Files come off Windows shares; "*.xlsx" must catch "FACTURE.XLSX".
+        self.assertTrue(self.sel("FACTURE.XLSX", inc=["*.xlsx"]))
+        self.assertTrue(self.sel("facture.xlsx", inc=["*.XLSX"]))
+        self.assertFalse(self.sel("Book.TMP", exc=["*.tmp"]))
+
+    def test_a_dotfile_pattern_catches_dotfiles(self):
+        # fnmatch has no "leading dot" rule, unlike a shell glob.
+        self.assertFalse(self.sel(".DS_Store", exc=[".*"]))
+        self.assertTrue(self.sel("data.csv", exc=[".*"]))
+
+    def test_office_temporaries_of_the_real_world(self):
+        inc, exc = ["*.xlsx", "*.docx"], ["~$*", "*.tmp"]
+        kept = ["Facture 2026.xlsx", "contrat.docx"]
+        dropped = ["~$Facture 2026.xlsx", "8F3A1B2C.tmp", "notes.txt"]
+        for b in kept:
+            self.assertTrue(self.sel(b, inc, exc), b)
+        for b in dropped:
+            self.assertFalse(self.sel(b, inc, exc), b)
+
+    def test_patterns_are_globs_not_substrings(self):
+        # "csv" alone must not match "facture.csv" -- a glob is anchored.
+        self.assertFalse(self.sel("facture.csv", inc=["csv"]))
+        self.assertTrue(self.sel("facture.csv", inc=["*csv"]))
+
+    def test_a_name_with_glob_characters_is_still_decidable(self):
+        self.assertTrue(self.sel("report[1].csv", inc=["*.csv"]))
+
+
 class TestReportSchema(unittest.TestCase):
     def test_core_columns_match_file_dispatch(self):
         # The first eight must stay identical, in order: the two tools' reports

@@ -429,6 +429,9 @@ class Runner(object):
         self.state = cfg.STATE_DIR
         self.archive_name = cfg.LOCAL_ARCHIVE_DIR
         self.excludes = [p.lower() for p in cfg.EXCLUDE_DIR_PATTERNS if p]
+        self.includes_f = [p for p in cfg.INCLUDE_PATTERNS if p]
+        self.excludes_f = [p for p in cfg.EXCLUDE_PATTERNS if p]
+        self.n_unselected = 0
 
     # ---------------------------------------------------------------- report
     #
@@ -1378,6 +1381,15 @@ class Runner(object):
                     continue
             except OSError:
                 continue
+            if not engine.file_selected(e.name, self.includes_f, self.excludes_f):
+                # Not ours: left where it is, and deliberately absent from the
+                # report. It never counts as unsettled either -- one stray
+                # .DS_Store would otherwise defeat the mtime skip forever.
+                self.n_unselected += 1
+                if self.log.debug_on:
+                    self.log("DEBUG", "NOT_SELECTED",
+                             relpath=os.path.relpath(e.path, self.cfg.SOURCE_DIR))
+                continue
             if self.process_file(e.path, leaf):
                 unsettled = True
         if not unsettled:
@@ -1606,7 +1618,9 @@ def main(argv=None):
         dry_run=("yes" if cfg.DRY_RUN else "no"), report_dir=cfg.REPORT_DIR,
         discovery_interval=cfg.DISCOVERY_INTERVAL,
         deep_scan_interval=cfg.DEEP_SCAN_INTERVAL,
-        exclude_patterns=",".join(cfg.EXCLUDE_DIR_PATTERNS),
+        exclude_dir_patterns=",".join(cfg.EXCLUDE_DIR_PATTERNS),
+        include_patterns=",".join(cfg.INCLUDE_PATTERNS),
+        exclude_patterns=",".join(cfg.EXCLUDE_PATTERNS),
         log_level=cfg.LOG_LEVEL, log_format=cfg.LOG_FORMAT)
     if not cfg.found:
         log("WARN", "CONFIG_NOT_FOUND", config=config_path,
@@ -1663,7 +1677,8 @@ def main(argv=None):
     log("INFO", "RUN_SUMMARY", cycles=cycle, scanned=runner.n_scanned,
         deployed=runner.n_deployed, overwritten=runner.n_overwritten,
         conflicts=runner.n_conflicts, moved=runner.n_moved,
-        errors=runner.n_errors, mount=runner.mount_state or "unknown")
+        errors=runner.n_errors, unselected=runner.n_unselected,
+        mount=runner.mount_state or "unknown")
     log("INFO", "END")
 
     # Undelivered data outranks delivered-but-not-drained.
