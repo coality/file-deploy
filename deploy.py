@@ -408,6 +408,7 @@ class Runner(object):
 
         # Per-run counters
         self.n_scanned = self.n_deployed = self.n_overwritten = 0
+        self.n_empty = 0
         self.n_conflicts = self.n_moved = self.n_errors = 0
 
         # Reported-once-per-run sets, so a permanently broken file cannot emit
@@ -1149,12 +1150,71 @@ class Runner(object):
 
         if self.dry:
             outcome, path, _prev = self.resolve_deploy(dst, digest, mtime)
+            if size == 0 and not cfg.DEPLOY_EMPTY_FILES:
+                self.log("INFO", "WOULD_ARCHIVE_NOT_DEPLOY", relpath=relpath,
+                         size=0, archive=archive_rel,
+                         reason="the file holds 0 bytes", dry="1")
+                self.n_empty += 1
+                return True
             self.log("INFO", "WOULD_MOVE", relpath=relpath, size=size,
                      deploy=outcome, on_conflict=cfg.ON_CONFLICT,
                      deployed=("" if path == dst else os.path.relpath(path, cfg.DEPLOY_DIR)),
                      archive=archive_rel, hash=digest[:8] + "…", dry="1")
             self.n_deployed += 1
             return True     # a rehearsal must never settle a directory
+
+        # --- 2b. the empty file ---------------------------------------------
+        # It is archived and drained exactly like a delivery, but it never enters
+        # the deployment transaction at all: no directory is created in the
+        # destination tree, no temporary is written, no rollback is armed. There
+        # are no bytes to deliver, so there is nothing to undo.
+        if size == 0 and not cfg.DEPLOY_EMPTY_FILES:
+            # Still re-stat first. A file is empty for an instant between its
+            # creation and its first write; if it gained content while we looked
+            # at it, draining it now would destroy that content.
+            st2 = stat_or_none(src)
+            if st2 is None or (st2.st_size, st2.st_mtime) != (size, mtime):
+                self.log("WARN", "SOURCE_CHANGED_DURING_COPY", relpath=relpath,
+                         before="0/%s" % mtime,
+                         after=("gone" if st2 is None
+                                else "%s/%s" % (st2.st_size, st2.st_mtime)),
+                         deployed="no", source_kept="yes",
+                         hint="the file was written while being examined; it is "
+                              "left alone and retried")
+                self.report_note(relpath, engine.STATUS_PENDING,
+                                 outcome="SOURCE_CHANGED_DURING_COPY",
+                                 reason="written while being examined",
+                                 file_date=iso(mtime), size_bytes=size,
+                                 pickup_dir=pickup, source_path=src)
+                return True
+            archive_path = self.archive_source(src, pickup, base, digest, mtime,
+                                               relpath)
+            if archive_path is None:
+                self._note_failure(relpath, "SOURCE_STUCK", "empty file that "
+                                   "could not be drained", src, pickup, mtime,
+                                   size, digest)
+                return True
+            self.n_moved += 1
+            self.n_empty += 1
+            arch_rel = (os.path.relpath(archive_path, cfg.SOURCE_DIR)
+                        if archive_path else "")
+            self.log.audit(engine.EMPTY_NOT_DEPLOYED, relpath, arch_rel, digest,
+                           size, "")
+            self.log("INFO", "EMPTY_NOT_DEPLOYED", relpath=relpath, size=0,
+                     archive=arch_rel, deployed="no",
+                     reason="the file holds 0 bytes",
+                     hint="DEPLOY_EMPTY_FILES=no; it was archived and drained "
+                          "but nothing was written to the deployment tree")
+            self.report_note(relpath, engine.STATUS_SUCCESS,
+                             outcome=engine.EMPTY_NOT_DEPLOYED, ignored="yes",
+                             reason="empty file (0 bytes)", file_date=iso(mtime),
+                             destination="", target="", still_present="",
+                             last_check="", source_path=src,
+                             archive_path=archive_path or "", pickup_dir=pickup,
+                             size_bytes=0, hash=digest,
+                             source_created=iso(btime) if btime else "",
+                             age_at_pickup_s=int(age))
+            return False
 
         # --- 3. deploy -----------------------------------------------------
         try:
@@ -1321,7 +1381,10 @@ class Runner(object):
             self.n_deployed += 1
         delivered = "" if outcome == engine.DEPLOY_SKIPPED else dpath
         self.report_note(relpath, engine.STATUS_SUCCESS, outcome=outcome,
-                         reason="", file_date=iso(mtime),
+                         ignored=("yes" if not delivered else "no"),
+                         reason=("destination left untouched (ON_CONFLICT=skip)"
+                                 if not delivered else ""),
+                         file_date=iso(mtime),
                          # destination is the directory, target the exact path
                          # delivered -- they differ as soon as ON_CONFLICT
                          # ="version" renames, and probing the wrong one would
@@ -1619,6 +1682,7 @@ def main(argv=None):
         discovery_interval=cfg.DISCOVERY_INTERVAL,
         deep_scan_interval=cfg.DEEP_SCAN_INTERVAL,
         exclude_dir_patterns=",".join(cfg.EXCLUDE_DIR_PATTERNS),
+        deploy_empty_files=("yes" if cfg.DEPLOY_EMPTY_FILES else "no"),
         include_patterns=",".join(cfg.INCLUDE_PATTERNS),
         exclude_patterns=",".join(cfg.EXCLUDE_PATTERNS),
         log_level=cfg.LOG_LEVEL, log_format=cfg.LOG_FORMAT)
@@ -1678,6 +1742,7 @@ def main(argv=None):
         deployed=runner.n_deployed, overwritten=runner.n_overwritten,
         conflicts=runner.n_conflicts, moved=runner.n_moved,
         errors=runner.n_errors, unselected=runner.n_unselected,
+        empty=runner.n_empty,
         mount=runner.mount_state or "unknown")
     log("INFO", "END")
 

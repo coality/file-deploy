@@ -222,6 +222,31 @@ EXCLUDE_DIR_PATTERNS =
 INCLUDE_PATTERNS =
 EXCLUDE_PATTERNS =
 
+# ---------------------------------------------------------------------------
+# Empty files (0 bytes)
+# ---------------------------------------------------------------------------
+# yes (default) = an empty file is deployed like any other, which is what a
+#                 pipeline using zero-byte sentinel or flag files needs.
+# no            = it is archived and drained exactly as usual, but NOTHING is
+#                 written to the deployment tree: no file, and not even a
+#                 parent directory. The log carries event=EMPTY_NOT_DEPLOYED
+#                 with reason="the file holds 0 bytes", and the report row is
+#                 marked ignored=yes with outcome=EMPTY_NOT_DEPLOYED.
+#
+# The source is still drained, so an empty file never piles up and never has to
+# be cleaned by hand -- it simply does not reach the consumer.
+#
+# /!\ Read this before setting it to no. A file is empty for an instant between
+# its creation and its first write. A producer that creates the file and then
+# fills it in place goes through that instant on every single file, and this
+# rule would consume it. Two things stand in the way:
+#   - MIN_STABLE_AGE, which must be > 0 (--check warns if it is not), and
+#   - a re-stat immediately before draining: a file that gained content while
+#     being examined is left alone and retried (SOURCE_CHANGED_DURING_COPY).
+# Neither helps against a producer that pauses for longer than MIN_STABLE_AGE
+# between creating a file and writing to it.
+DEPLOY_EMPTY_FILES = yes
+
 # ===========================================================================
 # Report, for BI tools
 # ===========================================================================

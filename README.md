@@ -105,6 +105,29 @@ loud. Nothing moves, the run still exits 0, and `RUN_SUMMARY` reports
 `unselected="N"`; run with `LOG_LEVEL = DEBUG` to see each file by name
 (`event=NOT_SELECTED`). Try a new pattern under `DRY_RUN = true` first.
 
+### Empty files
+
+`DEPLOY_EMPTY_FILES = no` archives and drains a zero-byte file as usual but
+writes nothing to the deployment tree — not the file, not even a parent
+directory. The source still empties, so nothing piles up; the file just never
+reaches the consumer.
+
+```
+INFO  event=EMPTY_NOT_DEPLOYED relpath="input/vide.csv" size=0 deployed="no"
+      reason="the file holds 0 bytes" archive="input/archive/vide.csv"
+```
+
+In the report the row is `status=success`, `outcome=EMPTY_NOT_DEPLOYED`,
+`ignored=yes`, `target` empty — so it never counts as delivered and consumption
+tracking never probes it.
+
+> Keep `MIN_STABLE_AGE` above 0 with this rule. A file is empty for an instant
+> between its creation and its first write; a producer that fills a file in
+> place goes through that instant every time. `--check` warns about the
+> combination, and a re-stat just before draining catches the file that gained
+> content while being examined — but neither helps if the producer pauses
+> longer than `MIN_STABLE_AGE`.
+
 `INSTANCE_ID` is what makes two configurations independent: the state, log and
 lock paths are derived from it, so they cannot collide and two configurations
 run in parallel rather than serialising.

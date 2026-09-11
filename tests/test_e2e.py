@@ -387,6 +387,55 @@ class TestSourceChangedDuringCopy(unittest.TestCase):
             self.assertIn("SOURCE_CHANGED_DURING_COPY", fh.read())
 
 
+    def test_writer_filling_an_empty_file(self):
+        """The producer writes into the file just as the empty rule examines it.
+
+        This is the race the rule creates and must survive: a file is empty for
+        an instant between its creation and its first write, so "0 bytes" alone
+        is never enough of a reason to drain it.
+        """
+        import deploy, engine
+        cfg = engine.Config()
+        cfg.values.update({
+            "INSTANCE_ID": "race",
+            "SOURCE_DIR": os.path.join(self.sb, "src"),
+            "DEPLOY_DIR": os.path.join(self.sb, "dep"),
+            "STATE_DIR": os.path.join(self.sb, "state"),
+            "LOG_DIR": os.path.join(self.sb, "logs"),
+            "MIN_STABLE_AGE": 0,
+            "DEPLOY_EMPTY_FILES": False,
+        })
+        src = os.path.join(self.sb, "src", "input", "vide.csv")
+        open(src, "w").close()                      # created, not yet written
+
+        log = deploy.Log(cfg, "test", False)
+        runner = deploy.Runner(cfg, log, dry_run=False)
+        real_stat, calls = deploy.stat_or_none, []
+
+        def racing_stat(path):
+            calls.append(path)
+            if len(calls) == 2 and path == src:     # the re-stat of the rule
+                with open(src, "a") as fh:          # the producer, right then
+                    fh.write("late content\n")
+            return real_stat(path)
+
+        deploy.stat_or_none = racing_stat
+        try:
+            runner.deploy_checked = True
+            unsettled = runner.process_file(src, os.path.dirname(src))
+        finally:
+            deploy.stat_or_none = real_stat
+
+        self.assertTrue(unsettled, "the directory must be retried")
+        self.assertTrue(os.path.exists(src), "NOT drained: it was being written")
+        with open(src, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "late content\n", "and its content kept")
+        self.assertFalse(os.path.exists(os.path.join(self.sb, "src", "input",
+                                                     "archive", "vide.csv")))
+        with open(log.path, encoding="utf-8") as fh:
+            self.assertIn("SOURCE_CHANGED_DURING_COPY", fh.read())
+
+
 # ==========================================================================
 class TestRefusedOperations(unittest.TestCase):
     """What happens when the filesystem says no, and what the log says about it.
@@ -917,6 +966,138 @@ class TestFilePatterns(Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+class TestEmptyFiles(Base):
+    """DEPLOY_EMPTY_FILES = no: archived and drained, but never deployed."""
+
+    def rep(self):
+        return os.path.join(self.sb, "reports")
+
+    def rows(self):
+        import csv as _csv
+        with open(os.path.join(self.rep(), "report.csv"),
+                  encoding="utf-8", newline="") as fh:
+            return list(_csv.DictReader(fh))
+
+    def test_by_default_an_empty_file_is_deployed(self):
+        self.drop("input/flag.txt", "")
+        self.write_conf()
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/flag.txt"],
+                         "the default must not change")
+
+    def test_archived_and_drained_but_not_deployed(self):
+        self.drop("input/vide.csv", "")
+        self.drop("input/plein.csv", "data\n")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        self.run_fd()
+        self.assertEqual(self.tree(self.dep), ["input/plein.csv"], "not deployed")
+        self.assertEqual(self.pending(), [], "but still drained")
+        self.assertIn("input/archive/vide.csv", self.archived(), "and archived")
+
+    def test_the_archived_copy_is_the_empty_file(self):
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        self.run_fd()
+        p = os.path.join(self.src, "input", "archive", "vide.csv")
+        self.assertEqual(os.path.getsize(p), 0)
+
+    def test_no_directory_is_created_in_the_destination(self):
+        # It never enters the deployment transaction, so it leaves no trace of
+        # itself in the destination tree -- not even an empty parent.
+        self.drop("input/sub/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        self.run_fd()
+        self.assertFalse(os.path.exists(os.path.join(self.dep, "input", "sub")),
+                         "no empty directory left behind")
+
+    def test_the_log_says_why(self):
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        self.run_fd()
+        log = self.log()
+        self.assertIn("EMPTY_NOT_DEPLOYED", log)
+        self.assertIn('reason="the file holds 0 bytes"', log)
+        self.assertIn('deployed="no"', log)
+        self.assertIn('empty="1"', log, "and RUN_SUMMARY counts it")
+
+    def test_the_audit_records_the_move(self):
+        # It did leave the source, so the audit trail must show it.
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        self.run_fd()
+        self.assertIn("EMPTY_NOT_DEPLOYED", self.audit())
+
+    def test_the_report_marks_it_ignored(self):
+        self.drop("input/vide.csv", "")
+        self.drop("input/plein.csv", "data\n")
+        self.write_conf(DEPLOY_EMPTY_FILES="no", REPORT_DIR='"%s"' % self.rep())
+        self.run_fd()
+        by_name = dict((r["filename"], r) for r in self.rows())
+        vide = by_name["vide.csv"]
+        self.assertEqual(vide["ignored"], "yes")
+        self.assertEqual(vide["outcome"], "EMPTY_NOT_DEPLOYED")
+        self.assertEqual(vide["status"], "success", "the move did succeed")
+        self.assertEqual(vide["reason"], "empty file (0 bytes)")
+        self.assertEqual(vide["size_bytes"], "0")
+        self.assertEqual(vide["target"], "", "nothing was delivered")
+        self.assertNotEqual(vide["archive_path"], "", "but it was archived")
+        self.assertEqual(by_name["plein.csv"]["ignored"], "no", "the other one")
+
+    def test_an_ignored_row_is_never_probed_for_consumption(self):
+        # No target means nothing to look for; still_present must stay empty
+        # instead of reading as "the consumer took it".
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no", REPORT_DIR='"%s"' % self.rep())
+        self.run_fd()
+        self.run_fd()
+        row = self.rows()[0]
+        self.assertEqual(row["still_present"], "")
+        self.assertEqual(row["last_check"], "")
+        self.assertEqual(row["transit_seconds"], "")
+
+    def test_a_conflict_skip_is_also_marked_ignored(self):
+        # Same meaning: drained without being deployed.
+        os.makedirs(os.path.join(self.dep, "input"))
+        with open(os.path.join(self.dep, "input", "a.txt"), "w") as fh:
+            fh.write("older\n")
+        self.drop("input/a.txt", "newer\n")
+        self.write_conf(ON_CONFLICT="skip", REPORT_DIR='"%s"' % self.rep())
+        self.run_fd()
+        row = self.rows()[0]
+        self.assertEqual(row["ignored"], "yes")
+        self.assertEqual(row["outcome"], "DEPLOY_SKIPPED")
+
+    def test_check_warns_about_the_unguarded_combination(self):
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no", MIN_STABLE_AGE=0)
+        r = self.run_fd("--check")
+        self.assertIn("DEPLOY_EMPTY_FILES=no", r.stdout + r.stderr,
+                      "--check warns about the combination")
+
+    def test_dry_run_rehearses_the_rule(self):
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no", DRY_RUN="yes")
+        self.run_fd()
+        self.assertIn("WOULD_ARCHIVE_NOT_DEPLOY", self.log())
+        self.assertEqual(self.pending(), ["input/vide.csv"], "nothing touched")
+        self.assertEqual(self.tree(self.dep), [])
+
+    def test_an_empty_file_never_blocks_the_source(self):
+        # Two runs: it must be gone after the first, not retried forever.
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        self.run_fd()
+        self.run_fd()
+        self.assertEqual(self.pending(), [])
+        self.assertEqual(len(self.archived()), 1, "archived once, not twice")
+
+    def test_the_exit_code_stays_zero(self):
+        self.drop("input/vide.csv", "")
+        self.write_conf(DEPLOY_EMPTY_FILES="no")
+        r = self.run_fd()
+        self.assertEqual(r.returncode, 0, "an ignored file is not an error")
+
+
 class TestInstances(Base):
     def test_two_configurations_share_nothing(self):
         srcB = os.path.join(self.sb, "srcB")
@@ -1124,8 +1305,19 @@ class TestReport(Base):
         self.run_fd()
         with open(self.published(), encoding="utf-8") as fh:
             header = fh.readline().strip().split(",")
-        self.assertEqual(header[-4:],
-                         ["target", "still_present", "last_check", "transit_seconds"])
+        # The invariant is the PREFIX, not the tail: a consumer reading by
+        # position must keep working, so every column ever shipped keeps its
+        # index and anything new lands after them. Pinning the tail instead
+        # would make this test fail on each addition without saying anything.
+        shipped = ["filename", "first_seen", "file_date", "destination",
+                   "moved_at", "status", "retries", "reason",
+                   "relpath", "instance", "run_id", "host", "outcome",
+                   "source_path", "archive_path", "pickup_dir",
+                   "size_bytes", "hash", "prev_hash", "source_created",
+                   "age_at_pickup_s",
+                   "target", "still_present", "last_check", "transit_seconds"]
+        self.assertEqual(header[:len(shipped)], shipped, "a column moved")
+        self.assertEqual(len(set(header)), len(header), "duplicate column")
 
     def test_core_columns_are_the_shared_ones(self):
         self.drop("input/a.txt")

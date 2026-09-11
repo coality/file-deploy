@@ -39,6 +39,9 @@ DEPLOYED_VERSION = "DEPLOYED_VERSION"
 DEPLOY_SKIPPED = "DEPLOY_SKIPPED"
 DEPLOY_RETRY = "DEPLOY_RETRY"
 DEPLOY_CONFLICT = "DEPLOY_CONFLICT"
+# Archived and drained like a delivery, but nothing was written to the
+# deployment tree -- the file held no bytes to deliver.
+EMPTY_NOT_DEPLOYED = "EMPTY_NOT_DEPLOYED"
 
 CONFLICT_POLICIES = ("overwrite", "version", "skip", "retry", "fail")
 
@@ -200,6 +203,9 @@ REPORT_COLUMNS = (
     # loads, its missing columns simply read empty, and a consumer reading by
     # position is not broken.
     "target", "still_present", "last_check", "transit_seconds",
+    # Appended in turn: drained without being deployed (an empty file, or a
+    # destination left alone by ON_CONFLICT = skip).
+    "ignored",
 )
 
 # A row's coarse state, shared with file-dispatch. `outcome` refines it with the
@@ -237,6 +243,7 @@ SETTINGS = [
     Setting("HASH_ALGO", "str", "sha256"),
     Setting("PRESERVE_METADATA", "bool", True),
     Setting("ON_CONFLICT", "enum", "overwrite", choices=CONFLICT_POLICIES),
+    Setting("DEPLOY_EMPTY_FILES", "bool", True),
     # scanning
     Setting("SCAN_INTERVAL", "int", 10, minimum=1),
     Setting("RUN_DURATION", "int", 55, minimum=0),
@@ -431,6 +438,12 @@ class Config(object):
                 "MIN_STABLE_AGE=0 is only safe if every producer writes elsewhere "
                 "and renames into place; otherwise a half-written file can be "
                 "deployed and then moved out of the source")
+        if not self.values["DEPLOY_EMPTY_FILES"] and self.values["MIN_STABLE_AGE"] == 0:
+            self.warnings.append(
+                "DEPLOY_EMPTY_FILES=no with MIN_STABLE_AGE=0: a file is empty "
+                "for an instant between its creation and its first write, so a "
+                "producer that does not rename into place can have that instant "
+                "archived and drained as an empty file")
         if not self.values["DEPLOY_MARKER"]:
             self.warnings.append(
                 "DEPLOY_MARKER is empty: an unmounted deployment share can no "

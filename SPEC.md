@@ -146,6 +146,36 @@ unconditionally, and that is not configurable.
 
 ## §5 — The per-file transaction
 
+### §5.1 — The empty file
+
+When `DEPLOY_EMPTY_FILES = no` and the file holds 0 bytes, it **never enters the
+deployment transaction**. No directory is created in the destination tree, no
+temporary is written, no rollback is armed — there are no bytes to deliver, so
+there is nothing to undo. The file is then archived and drained by the ordinary
+commit, and the run ends with exit code 0.
+
+| Aspect | Value |
+|---|---|
+| Log | `EMPTY_NOT_DEPLOYED`, at `INFO`, with `deployed="no"` and `reason="the file holds 0 bytes"` |
+| Audit | Recorded — the file did leave the source |
+| Report | `status=success`, `outcome=EMPTY_NOT_DEPLOYED`, `ignored=yes`, `reason="empty file (0 bytes)"`, `target` empty |
+| Counters | `RUN_SUMMARY` carries `empty="N"` |
+| `DRY_RUN` | Rehearsed as `WOULD_ARCHIVE_NOT_DEPLOY` |
+
+> **The race this rule creates.** A file is empty for an instant between its
+> creation and its first write, so "0 bytes" is never on its own a sufficient
+> reason to drain a file. Two guards apply: `MIN_STABLE_AGE` must be greater
+> than 0 (validation warns otherwise), and the source is re-stat'ed immediately
+> before being drained — a file that gained content while being examined yields
+> `SOURCE_CHANGED_DURING_COPY`, is left in place and is retried. Neither guard
+> covers a producer that pauses longer than `MIN_STABLE_AGE` between creating a
+> file and writing into it.
+
+The `ignored` column is not specific to this rule: it reads `yes` for **any file
+drained without being deployed**, which today means an empty file under this
+setting, or a destination left untouched by `ON_CONFLICT = skip`.
+
+
 Normative sequence. The order *is* the safety argument; it is not negotiable.
 
 ### 1. Stability
@@ -458,6 +488,7 @@ where a column exists.
 | `RUN_DURATION` | `55` | Maximum duration of one run |
 | `MIN_STABLE_AGE` | `5` | **Safety setting** — see §8.3 |
 | `LOCAL_ARCHIVE_DIR` | `"archive"` | Name of the local archive; `""` disables it |
+| `DEPLOY_EMPTY_FILES` | `yes` | `no` archives and drains a 0-byte file without deploying it — see [§5.1](#51--the-empty-file) |
 | `ON_CONFLICT` | `"overwrite"` | `overwrite` / `version` / `skip` / `retry` / `fail` when the destination holds different content — see [§6](#6--naming) |
 | `REPORT_DIR` | `""` | Directory receiving the daily CSV of everything that moved; `""` disables it |
 | `REPORT_DELIMITER` | `","` | Field separator of the published copy (`";"` for a French locale) |

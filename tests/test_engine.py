@@ -163,6 +163,23 @@ class TestReportSchema(unittest.TestCase):
             ["failed", "pending", "success"])
 
 
+class TestEmptyFilePolicy(unittest.TestCase):
+    def test_the_outcome_exists_and_is_distinct(self):
+        others = (engine.DEPLOYED, engine.DEPLOYED_IDENTICAL,
+                  engine.DEPLOYED_OVERWRITE, engine.DEPLOYED_VERSION,
+                  engine.DEPLOY_SKIPPED, engine.DEPLOY_RETRY,
+                  engine.DEPLOY_CONFLICT)
+        self.assertNotIn(engine.EMPTY_NOT_DEPLOYED, others)
+
+    def test_deploying_empty_files_is_the_default(self):
+        # Turning this on by default would silently stop delivering the sentinel
+        # files some pipelines rely on.
+        self.assertIs(engine.BY_NAME["DEPLOY_EMPTY_FILES"].default, True)
+
+    def test_ignored_is_the_last_column(self):
+        self.assertEqual(engine.REPORT_COLUMNS[-1], "ignored")
+
+
 class TestConfig(unittest.TestCase):
     def _write(self, text, name="compta.conf"):
         d = tempfile.mkdtemp(prefix="fd-cfg-")
@@ -255,6 +272,16 @@ class TestConfig(unittest.TestCase):
         c = self._cfg(self.BASE + 'MIN_STABLE_AGE = 0\nLOCAL_ARCHIVE_DIR = ""\n')
         self.assertEqual(c.errors, [])
         self.assertEqual(len(c.warnings), 2)
+
+    def test_skipping_empty_files_without_a_stability_guard_warns(self):
+        # A file is empty for an instant between creation and first write.
+        c = self._cfg(self.BASE + "DEPLOY_EMPTY_FILES = no\nMIN_STABLE_AGE = 0\n")
+        self.assertEqual(c.errors, [])
+        self.assertTrue(any("DEPLOY_EMPTY_FILES=no" in w for w in c.warnings))
+
+    def test_the_same_pair_with_a_stability_guard_is_quiet(self):
+        c = self._cfg(self.BASE + "DEPLOY_EMPTY_FILES = no\nMIN_STABLE_AGE = 10\n")
+        self.assertEqual(c.warnings, [])
 
     def test_missing_file_is_not_an_error_by_itself(self):
         c = engine.Config().parse("/nonexistent/nope.conf")
